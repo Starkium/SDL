@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SDL WebXR JavaScript Library Test</title>
+    <style>
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { color: #e94560; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .status {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .status.ok { border-left: 4px solid #0f0; }
+        .status.warn { border-left: 4px solid #ff0; }
+        .status.error { border-left: 4px solid #f00; }
+        .btn {
+            background: #e94560;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        .btn:hover { background: #c73e54; }
+        .btn:disabled { background: #555; cursor: not-allowed; }
+        #log {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        .log-info { color: #58a6ff; }
+        .log-success { color: #3fb950; }
+        .log-warn { color: #d29922; }
+        .log-error { color: #f85149; }
+        canvas {
+            border: 2px solid #16213e;
+            border-radius: 8px;
+            display: block;
+            margin: 20px auto;
+        }
+        .xr-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .xr-overlay.active { display: flex; }
+        .xr-content {
+            text-align: center;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🥽 SDL WebXR JavaScript Library Test</h1>
+        <p>This tests the WebXR JavaScript library without needing Emscripten compilation.</p>
+        
+        <div id="status-webxr" class="status">Checking WebXR support...</div>
+        
+        <p>
+            <button class="btn" id="btn-vr" onclick="requestVRSession()" disabled>Enter VR</button>
+            <button class="btn" id="btn-ar" onclick="requestARSession()" disabled>Enter AR</button>
+            <button class="btn" onclick="testLibraryFunctions()">Test Library Functions</button>
+        </p>
+        
+        <canvas id="canvas" width="800" height="450"></canvas>
+        
+        <h2>Log</h2>
+        <div id="log"></div>
+    </div>
+    
+    <div id="xr-overlay" class="xr-overlay">
+        <div class="xr-content">
+            <h2>🥽 XR Session Active</h2>
+            <p id="xr-status">Initializing...</p>
+            <button class="btn" onclick="endXRSession()">Exit XR</button>
+        </div>
+    </div>
+
+<script>
+// =============================================================================
+// Minimal SDL WebXR Library Simulation
+// This simulates what library_sdl_webxr.js does, but standalone for testing
+// =============================================================================
+
+const SDLWebXR = {
+    // State
+    session: null,
+    gl: null,
+    glBinding: null,
+    baseLayer: null,
+    referenceSpace: null,
+    frame: null,
+    pose: null,
+    
+    // Session state enum (matches SDL_WebXRSessionState)
+    STATE_IDLE: 0,
+    STATE_REQUESTING: 1,
+    STATE_READY: 2,
+    STATE_RUNNING: 3,
+    STATE_VISIBLE: 4,
+    STATE_VISIBLE_BLURRED: 5,
+    STATE_ENDED: 6,
+    
+    sessionState: 0,
+    
+    getModeString(mode) {
+        return ['inline', 'immersive-vr', 'immersive-ar'][mode] || 'inline';
+    },
+    
+    getRefSpaceString(refSpace) {
+        return ['viewer', 'local', 'local-floor', 'bounded-floor', 'unbounded'][refSpace] || 'local';
+    },
+    
+    // Check if WebXR is supported
+    isSupported() {
+        return !!navigator.xr;
+    },
+    
+    // Check session mode support
+    async isSessionSupported(mode) {
+        if (!navigator.xr) return false;
+        const modeStr = this.getModeString(mode);
+        try {
+            return await navigator.xr.isSessionSupported(modeStr);
+        } catch (e) {
+            return false;
+        }
+    },
+    
+    // Initialize/request session
+    async initialize(mode, refSpaceType, gl, callbacks) {
+        const modeStr = this.getModeString(mode);
+        const refSpaceStr = this.getRefSpaceString(refSpaceType);
+        
+        this.sessionState = this.STATE_REQUESTING;
+        this.gl = gl;
+        
+        try {
+            // Make context XR-compatible
+            if (gl.makeXRCompatible) {
+                await gl.makeXRCompatible();
+            }
+            
+            // Request session
+            const session = await navigator.xr.requestSession(modeStr, {
+                requiredFeatures: [refSpaceStr],
+            });
+            
+            this.session = session;
+            this.sessionState = this.STATE_READY;
+            
+            // Set up event listeners
+            session.addEventListener('end', () => {
+                this.sessionState = this.STATE_ENDED;
+                if (callbacks.onEnded) callbacks.onEnded();
+                this.cleanup();
+            });
+            
+            session.addEventListener('visibilitychange', () => {
+                if (session.visibilityState === 'visible') {
+                    this.sessionState = this.STATE_VISIBLE;
+                } else if (session.visibilityState === 'visible-blurred') {
+                    this.sessionState = this.STATE_VISIBLE_BLURRED;
+                }
+            });
+            
+            // Create XR layer
+            this.baseLayer = new XRWebGLLayer(session, gl);
+            session.updateRenderState({ baseLayer: this.baseLayer });
+            
+            // Request reference space
+            this.referenceSpace = await session.requestReferenceSpace(refSpaceStr);
+            this.sessionState = this.STATE_RUNNING;
+            
+            if (callbacks.onStarted) callbacks.onStarted(refSpaceStr);
+            
+            return true;
+        } catch (e) {
+            this.sessionState = this.STATE_IDLE;
+            if (callbacks.onFailed) callbacks.onFailed(e.message);
+            return false;
+        }
+    },
+    
+    // Start frame loop
+    startFrameLoop(renderCallback) {
+        const onFrame = (time, frame) => {
+            if (!this.session) return;
+            
+            this.frame = frame;
+            this.pose = frame.getViewerPose(this.referenceSpace);
+            
+            if (this.pose && renderCallback) {
+                renderCallback(time, frame, this.pose);
+            }
+            
+            this.session.requestAnimationFrame(onFrame);
+        };
+        
+        this.session.requestAnimationFrame(onFrame);
+    },
+    
+    // Get view count
+    getViewCount() {
+        return this.pose ? this.pose.views.length : 0;
+    },
+    
+    // Get render target size
+    getRenderTargetSize() {
+        if (!this.baseLayer) return null;
+        return {
+            width: this.baseLayer.framebufferWidth,
+            height: this.baseLayer.framebufferHeight
+        };
+    },
+    
+    // Get viewport for view
+    getViewport(viewIndex) {
+        if (!this.pose || !this.baseLayer) return null;
+        const view = this.pose.views[viewIndex];
+        if (!view) return null;
+        return this.baseLayer.getViewport(view);
+    },
+    
+    // Get framebuffer
+    getFramebuffer() {
+        return this.baseLayer ? this.baseLayer.framebuffer : null;
+    },
+    
+    // End session
+    async end() {
+        if (this.session) {
+            await this.session.end();
+        }
+    },
+    
+    cleanup() {
+        this.session = null;
+        this.glBinding = null;
+        this.baseLayer = null;
+        this.referenceSpace = null;
+        this.frame = null;
+        this.pose = null;
+        this.sessionState = this.STATE_IDLE;
+    }
+};
+
+// =============================================================================
+// Test UI Code
+// =============================================================================
+
+const logEl = document.getElementById('log');
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+
+function log(msg, type = 'info') {
+    const time = new Date().toISOString().split('T')[1].slice(0, 8);
+    const span = document.createElement('span');
+    span.className = `log-${type}`;
+    span.textContent = `[${time}] ${msg}\n`;
+    logEl.appendChild(span);
+    logEl.scrollTop = logEl.scrollHeight;
+    console.log(msg);
+}
+
+async function checkWebXR() {
+    const statusEl = document.getElementById('status-webxr');
+    const btnVR = document.getElementById('btn-vr');
+    const btnAR = document.getElementById('btn-ar');
+    
+    if (!navigator.xr) {
+        statusEl.className = 'status error';
+        statusEl.innerHTML = '❌ <strong>WebXR not available</strong><br>' +
+            'Install the <a href="https://chrome.google.com/webstore/detail/webxr-api-emulator/mjddjgeghkdijejnciaefnkjmkafnmgk" target="_blank" style="color:#e94560">WebXR API Emulator</a> extension.';
+        log('WebXR API not found', 'error');
+        return;
+    }
+    
+    log('WebXR API found', 'success');
+    
+    // Check VR support
+    const vrSupported = await SDLWebXR.isSessionSupported(1); // IMMERSIVE_VR
+    const arSupported = await SDLWebXR.isSessionSupported(2); // IMMERSIVE_AR
+    
+    log(`Immersive VR supported: ${vrSupported}`, vrSupported ? 'success' : 'warn');
+    log(`Immersive AR supported: ${arSupported}`, arSupported ? 'success' : 'warn');
+    
+    btnVR.disabled = !vrSupported;
+    btnAR.disabled = !arSupported;
+    
+    if (vrSupported || arSupported) {
+        statusEl.className = 'status ok';
+        statusEl.innerHTML = '✅ <strong>WebXR available!</strong> ' +
+            `VR: ${vrSupported ? '✓' : '✗'}, AR: ${arSupported ? '✓' : '✗'}`;
+    } else {
+        statusEl.className = 'status warn';
+        statusEl.innerHTML = '⚠️ <strong>WebXR available</strong> but no immersive modes supported.<br>' +
+            'Enable device emulation in the WebXR Emulator extension.';
+    }
+}
+
+function testLibraryFunctions() {
+    log('--- Testing SDL WebXR Library Functions ---', 'info');
+    
+    log(`isSupported(): ${SDLWebXR.isSupported()}`, SDLWebXR.isSupported() ? 'success' : 'error');
+    log(`getModeString(0): "${SDLWebXR.getModeString(0)}" (expected: "inline")`, 'info');
+    log(`getModeString(1): "${SDLWebXR.getModeString(1)}" (expected: "immersive-vr")`, 'info');
+    log(`getModeString(2): "${SDLWebXR.getModeString(2)}" (expected: "immersive-ar")`, 'info');
+    log(`getRefSpaceString(0): "${SDLWebXR.getRefSpaceString(0)}" (expected: "viewer")`, 'info');
+    log(`getRefSpaceString(2): "${SDLWebXR.getRefSpaceString(2)}" (expected: "local-floor")`, 'info');
+    log(`sessionState: ${SDLWebXR.sessionState} (STATE_IDLE = 0)`, 'info');
+    log(`getViewCount(): ${SDLWebXR.getViewCount()} (expected: 0 when no session)`, 'info');
+    
+    log('--- Library function tests complete ---', 'success');
+}
+
+async function requestVRSession() {
+    log('Requesting immersive-vr session...', 'info');
+    await startXRSession(1, 2); // IMMERSIVE_VR, LOCAL_FLOOR
+}
+
+async function requestARSession() {
+    log('Requesting immersive-ar session...', 'info');
+    await startXRSession(2, 2); // IMMERSIVE_AR, LOCAL_FLOOR
+}
+
+async function startXRSession(mode, refSpace) {
+    document.getElementById('xr-overlay').classList.add('active');
+    document.getElementById('xr-status').textContent = 'Requesting session...';
+    
+    const success = await SDLWebXR.initialize(mode, refSpace, gl, {
+        onStarted: (refSpaceType) => {
+            log(`Session started! Reference space: ${refSpaceType}`, 'success');
+            document.getElementById('xr-status').textContent = `Running (${refSpaceType})`;
+            
+            // Start render loop
+            let frameCount = 0;
+            SDLWebXR.startFrameLoop((time, frame, pose) => {
+                frameCount++;
+                
+                // Log every 60 frames
+                if (frameCount % 60 === 0) {
+                    const viewCount = SDLWebXR.getViewCount();
+                    const size = SDLWebXR.getRenderTargetSize();
+                    log(`Frame ${frameCount}: ${viewCount} views, ${size?.width}x${size?.height}`, 'info');
+                    
+                    // Log view details
+                    for (let i = 0; i < viewCount; i++) {
+                        const vp = SDLWebXR.getViewport(i);
+                        const view = pose.views[i];
+                        if (vp && view) {
+                            log(`  View ${i}: viewport(${vp.x},${vp.y} ${vp.width}x${vp.height})`, 'info');
+                        }
+                    }
+                }
+                
+                // Actually render something
+                const fb = SDLWebXR.getFramebuffer();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+                
+                for (let i = 0; i < pose.views.length; i++) {
+                    const view = pose.views[i];
+                    const vp = SDLWebXR.getViewport(i);
+                    if (!vp) continue;
+                    
+                    gl.viewport(vp.x, vp.y, vp.width, vp.height);
+                    
+                    // Cycle colors based on time
+                    const r = Math.sin(time * 0.001) * 0.3 + 0.2;
+                    const g = Math.sin(time * 0.001 + 2) * 0.3 + 0.2;
+                    const b = Math.sin(time * 0.001 + 4) * 0.3 + 0.4;
+                    gl.clearColor(r, g, b, 1);
+                    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+                }
+            });
+        },
+        onEnded: () => {
+            log('Session ended', 'warn');
+            document.getElementById('xr-overlay').classList.remove('active');
+        },
+        onFailed: (msg) => {
+            log(`Session failed: ${msg}`, 'error');
+            document.getElementById('xr-overlay').classList.remove('active');
+        }
+    });
+    
+    if (!success) {
+        document.getElementById('xr-overlay').classList.remove('active');
+    }
+}
+
+async function endXRSession() {
+    log('Ending XR session...', 'info');
+    await SDLWebXR.end();
+}
+
+// Draw something on the canvas for non-XR preview
+function drawPreview() {
+    if (SDLWebXR.session) return; // Don't draw when in XR
+    
+    const time = performance.now() * 0.001;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.1, 0.1, 0.2, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    
+    requestAnimationFrame(drawPreview);
+}
+
+// Initialize
+log('SDL WebXR JavaScript Library Test', 'info');
+log('This validates the WebXR integration without Emscripten', 'info');
+checkWebXR();
+drawPreview();
+</script>
+</body>
+</html>

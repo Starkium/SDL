@@ -1768,6 +1768,19 @@ elseif(EMSCRIPTEN)
     endif()
   endif()
 
+  # WebXR support for GPU/XR on Emscripten
+  if(SDL_GPU)
+    set(SDL_WEBXR_JS_LIBRARY "${SDL3_SOURCE_DIR}/src/gpu/xr/library_sdl_webxr.js")
+    if(EXISTS "${SDL_WEBXR_JS_LIBRARY}")
+      # Add the JS library to be linked with SDL applications
+      if(TARGET SDL3-static)
+        target_link_options(SDL3-static INTERFACE "SHELL:--js-library ${SDL_WEBXR_JS_LIBRARY}")
+        set_property(TARGET SDL3-static APPEND PROPERTY LINK_DEPENDS "${SDL_WEBXR_JS_LIBRARY}")
+      endif()
+      message(STATUS "SDL WebXR JS library found: ${SDL_WEBXR_JS_LIBRARY}")
+    endif()
+  endif()
+
   CheckPTHREAD()
   CheckLibUnwind()
 

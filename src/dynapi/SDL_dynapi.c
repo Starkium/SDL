@@ -39,6 +39,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_openxr.h>
+#include <SDL3/SDL_webxr.h>
 #define SDL_MAIN_NOIMPL // don't drag in header-only implementation of SDL_main
 #include <SDL3/SDL_main.h>
 #include "../core/SDL_core_unsupported.h"

@@ -1277,6 +1277,20 @@ SDL3_0.0.0 {
     SDL_OpenXR_LoadLibrary;
     SDL_OpenXR_UnloadLibrary;
     SDL_OpenXR_GetXrGetInstanceProcAddr;
+    SDL_WebXR_IsAvailable;
+    SDL_WebXR_IsSessionModeSupported;
+    SDL_WebXR_RequestSession;
+    SDL_WebXR_GetSessionState;
+    SDL_WebXR_EndSession;
+    SDL_WebXR_BindGPUDevice;
+    SDL_WebXR_BeginFrame;
+    SDL_WebXR_EndFrame;
+    SDL_WebXR_GetViewCount;
+    SDL_WebXR_GetRenderTargetSize;
+    SDL_WebXR_GetHeadTransform;
+    SDL_WebXR_GetFramebuffer;
+    SDL_WebXR_GetColorTextureForView;
+    SDL_WebXR_GetDepthTextureForView;
     # extra symbols go here (don't modify this line)
   local: *;
 };
